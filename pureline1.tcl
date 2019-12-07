@@ -12,9 +12,6 @@
   # Initialise our own env variables:
   foreach {var val} {
       PROMPT ">"
-      HISTORY ""
-      HISTORY_BUFFER 100
-      COMPLETION_MATCH ""
   } {
       if {![info exists env($var)]} {
           set env($var) $val
@@ -24,17 +21,14 @@
       CMDLINE ""
       CMDLINE_CURSOR 0
       CMDLINE_LINES 0
-      HISTORY_LEVEL -1
   } {
       set env($var) $val
   }
   unset var val
-  
-  array set ALIASES {}
+
   set forever 0
   
   # Resource & history files:
-  set HISTFILE $env(HOME)/.tclline_history
   set RCFILE $env(HOME)/.tcllinerc
   
   proc ESC {} {
@@ -164,14 +158,11 @@
   
   rename unknown _unknown
   proc unknown {args} {
-      global env ALIASES
+      global env
   
       set name [lindex $args 0]
       set cmdline $env(CMDLINE)
       set cmd [string trim [regexp -inline {^\s*[^\s]+} $cmdline]]
-      if {[info exists ALIASES($cmd)]} {
-          set cmd [regexp -inline {^\s*[^\s]+} $ALIASES($cmd)]
-      }
       
       set new [auto_execok $name]
       if {$new != ""} {
@@ -190,16 +181,6 @@
       eval _unknown $args
   }
   
-  proc alias {word command} {
-      global ALIASES
-      set ALIASES($word) $command
-  }
-  
-  proc unalias {word} {
-      global ALIASES
-      array unset ALIASES $word
-  }
-  
   ################################
   # Key bindings
   ################################
@@ -212,14 +193,8 @@
           append seq $ch
   
           switch -exact -- $seq {
-              "\[A" { ;# Cursor Up (cuu1,up)
-                  handleHistory 1
-                  set found 1; break
-              }
-              "\[B" { ;# Cursor Down
-                  handleHistory -1
-                  set found 1; break
-              }
+              "\[A" { ;# Cursor Up (cuu1,up)}
+              "\[B" { ;# Cursor Down}
               "\[C" { ;# Cursor Right (cuf1,nd)
                   if {$env(CMDLINE_CURSOR) < [string length $env(CMDLINE)]} {
                       incr env(CMDLINE_CURSOR)
@@ -284,205 +259,7 @@
       # Rate limiter:
       set keybuffer ""
   }
-  
-  proc shortMatch {maybe} {
-      # Find the shortest matching substring:
-      set maybe [lsort $maybe]
-      set shortest [lindex $maybe 0]
-      foreach x $maybe {
-          while {![string match $shortest* $x]} {
-              set shortest [string range $shortest 0 end-1]
-          }
-      }
-      return $shortest
-  }
-  
-  proc handleCompletion {} {
-      global env
-      set vars ""
-      set cmds ""
-      set execs ""
-      set files ""
-      
-      # First find out what kind of word we need to complete:
-      set wordstart [string last " " $env(CMDLINE) \
-          [expr {$env(CMDLINE_CURSOR)-1}]]
-      incr wordstart
-      set wordend [string first " " $env(CMDLINE) $wordstart]
-      if {$wordend == -1} {
-          set wordend end
-      } else {
-          incr wordend -1
-      }
-      set word [string range $env(CMDLINE) $wordstart $wordend]
-      
-      if {[string trim $word] == ""} return
-      
-      set firstchar [string index $word 0]
-      
-      # Check if word is a variable:
-      if {$firstchar == "\$"} {
-          set word [string range $word 1 end]
-          incr wordstart
-          
-          # Check if it is an array key:
-          set x [string first "(" $word]
-          if {$x != -1} {
-              set v [string range $word 0 [expr {$x-1}]]
-              incr x
-              set word [string range $word $x end]
-              incr wordstart $x
-              if {[uplevel #0 "array exists $v"]} {
-                  set vars [uplevel #0 "array names $v $word*"]
-              }
-          } else {        
-              foreach x [uplevel #0 {info vars}] {
-                  if {[string match $word* $x]} {
-                      lappend vars $x
-                  }
-              }
-          }
-      } else {
-          # Check if word is possibly a path:
-          if {$firstchar == "/" || $firstchar == "." || $wordstart != 0} {
-              set files [glob -nocomplain -- $word*]
-          }
-          if {$files == ""} {
-              # Not a path then get all possibilities:
-              if {$firstchar == "\[" || $wordstart == 0} {
-                  if {$firstchar == "\["} {
-                      set word [string range $word 1 end]
-                      incr wordstart
-                  }
-                  # Check executables:
-                  foreach dir [split $env(PATH) :] {
-                      foreach f [glob -nocomplain -directory $dir -- $word*] {
-                          set exe [string trimleft [string range $f \
-                              [string length $dir] end] "/"]
-                          
-                          if {[lsearch -exact $execs $exe] == -1} {
-                              lappend execs $exe
-                          }
-                      }
-                  }
-                  # Check commands:
-                  foreach x [info commands] {
-                      if {[string match $word* $x]} {
-                          lappend cmds $x
-                      }
-                  }
-              } else {
-                  # Check commands anyway:
-                  foreach x [info commands] {
-                      if {[string match $word* $x]} {
-                          lappend cmds $x
-                      }
-                  }
-              }
-          }
-          if {$wordstart != 0} {
-              # Check variables anyway:
-              set x [string first "(" $word]
-              if {$x != -1} {
-                  set v [string range $word 0 [expr {$x-1}]]
-                  incr x
-                  set word [string range $word $x end]
-                  incr wordstart $x
-                  if {[uplevel #0 "array exists $v"]} {
-                      set vars [uplevel #0 "array names $v $word*"]
-                  }
-              } else {        
-                  foreach x [uplevel #0 {info vars}] {
-                      if {[string match $word* $x]} {
-                          lappend vars $x
-                      }
-                  }
-              }
-          }
-      }
-      
-      set maybe [concat $vars $cmds $execs $files]
-      set shortest [shortMatch $maybe]
-      if {"$word" == "$shortest"} {
-          if {[llength $maybe] > 1 && $env(COMPLETION_MATCH) != $maybe} {
-              set env(COMPLETION_MATCH) $maybe
-              clearline
-              set temp ""
-              foreach {match format} {
-                  vars  "35"
-                  cmds  "1;32"
-                  execs "32"
-                  files "0"
-              } {
-                  if {[llength [set $match]]} {
-                      append temp "[ESC]\[${format}m"
-                      foreach x [set $match] {
-                          append temp "[file tail $x] "
-                      }
-                      append temp "[ESC]\[0m"
-                  }
-              }
-              print "\n$temp\n"
-          }
-      } else {
-          if {[file isdirectory $shortest] &&
-              [string index $shortest end] != "/"} {
-              append shortest "/"
-          }
-          if {$shortest != ""} {
-              set env(CMDLINE) \
-                  [string replace $env(CMDLINE) $wordstart $wordend $shortest]
-              set env(CMDLINE_CURSOR) \
-                  [expr {$wordstart+[string length $shortest]}]
-          } elseif {$env(COMPLETION_MATCH) != " not found "} {
-              set env(COMPLETION_MATCH) " not found "
-              print "\nNo match found.\n"
-          }
-      }
-  }
-  
-  proc handleHistory {x} {
-      global env
-  
-      set hlen [llength $env(HISTORY)]
-      incr env(HISTORY_LEVEL) $x
-      if {$env(HISTORY_LEVEL) > -1} {
-          set env(CMDLINE) [lindex $env(HISTORY) end-$env(HISTORY_LEVEL)]
-          set env(CMDLINE_CURSOR) [string length $env(CMDLINE)]
-      }
-      if {$env(HISTORY_LEVEL) <= -1} {
-          set env(HISTORY_LEVEL) -1
-          set env(CMDLINE) ""
-          set env(CMDLINE_CURSOR) 0
-      } elseif {$env(HISTORY_LEVEL) > $hlen} {
-          set env(HISTORY_LEVEL) $hlen
-      }
-  }
-  
-  ################################
-  # History handling functions
-  ################################
-  
-  proc getHistory {} {
-      global env
-      return $env(HISTORY)
-  }
-  
-  proc setHistory {hlist} {
-      global env
-      set env(HISTORY) $hlist
-  }
-  
-  proc appendHistory {cmdline} {
-      global env
-      set old [lsearch -exact $env(HISTORY) $cmdline]
-      if {$old != -1} {
-          set env(HISTORY) [lreplace $env(HISTORY) $old $old]
-      }
-      lappend env(HISTORY) $cmdline
-      set env(HISTORY) \
-          [lrange $env(HISTORY) end-$env(HISTORY_BUFFER) end]
-  }
+
   
   ################################
   # main()
@@ -506,46 +283,12 @@
       # Reset terminal:
       print "[ESC]c[ESC]\[2J" nowait
       lineInput
-      
-      set hlist [getHistory]
-      if {[llength $hlist] > 0} {
-          set f [open $HISTFILE w]
-          foreach x $hlist {
-              # Escape newlines:
-              puts $f [string map {
-                  \n "\\n"
-                  "\\" "\\b"
-              } $x]
-          }
-          close $f
-      }
-      
+
       exit $code
   }
   
   if {[file exists $RCFILE]} {
       source $RCFILE
-  }
-  
-  # Load history if available:
-  if {[llength $env(HISTORY)] == 0} {
-      if {[file exists $HISTFILE]} {
-          set f [open $HISTFILE r]
-          set hlist [list]
-          foreach x [split [read $f] "\n"] {
-              if {$x != ""} {
-                  # Undo newline escapes:
-                  lappend hlist [string map {
-                      "\\n" \n
-                      "\\\\" "\\"
-                      "\\b" "\\"
-                  } $x]
-              }
-          }
-          setHistory $hlist
-          unset hlist
-          close $f
-      }
   }
   
   rawInput
@@ -579,72 +322,21 @@
               append env(CMDLINE) $char
               append env(CMDLINE) $trailing
               incr env(CMDLINE_CURSOR)
-          } elseif {$char == "\t"} {
-              handleCompletion
           } elseif {$char == "\n" || $char == "\r"} {
               if {[info complete $env(CMDLINE)] &&
                   [string index $env(CMDLINE) end] != "\\"} {
                   lineInput
                   print "\n" nowait
                   uplevel #0 {
-                      global env ALIASES
-                      
-                      # Handle aliases:
+                      global env
+
                       set cmdline $env(CMDLINE)
-                      set cmd [string trim [regexp -inline {^\s*[^\s]+} $cmdline]]
-                      if {[info exists ALIASES($cmd)]} {
-                          regsub -- "(?q)$cmd" $cmdline $ALIASES($cmd) cmdline
-                      }
-                      
-                      # Perform glob substitutions:
-                      set cmdline [string map {
-                          "\\*" \0
-                          "\\~" \1
-                      } $cmdline]
-                        
-                      # Don't substitute * and ~ in braces:
-                      foreach x [regexp -inline -all -indices {{.*?}} $cmdline] {
-                          foreach {i n} $x break
-                          set s [string range $cmdline $i $n]
-                          
-                          set s [string map {
-                              "*" \0
-                              "~" \1
-                          } $s]
-                          set cmdline [string replace $cmdline $i $n $s]
-                      }
-                        
-                      while {[regexp -indices \
-                          {([\w/\.]*(?:~|\*)[\w/\.]*)+} $cmdline x]
-                      } {
-                          foreach {i n} $x break
-                          set s [string range $cmdline $i $n]
-                          set x [glob -nocomplain -- $s]
-                          
-                          # If glob can't find anything then don't do
-                          # glob substitution, pass * or ~ as literals:
-                          if {$x == ""} {
-                              set x [string map {              
-                                  "*" \0
-                                  "~" \1
-                              } $s]
-                          }
-                          set cmdline [string replace $cmdline $i $n $x]
-                      }
-                      set cmdline [string map {
-                          \0 "*"
-                          \1 "~"
-                      } $cmdline]
-                      
+                                           
                       # Run the command:
                       catch $cmdline res
                       if {$res != ""} {
                           print "$res\n"
                       }
-                      
-                      # Append HISTORY:
-                      set env(HISTORY_LEVEL) -1
-                      appendHistory $env(CMDLINE)
                       
                       set env(CMDLINE) ""
                       set env(CMDLINE_CURSOR) 0
